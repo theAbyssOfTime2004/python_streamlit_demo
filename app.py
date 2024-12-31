@@ -1,45 +1,193 @@
-from google_trans_new import google_translator # pip install google_trans_new==1.1.9
-import streamlit as st # pip install streamlit==0.82.0
-import gtts # pip install gtts
 
+import os
+import requests
+import json
+import streamlit as st
+from urllib.parse import quote
+from dotenv import load_dotenv
 
-st.set_page_config(page_title='Simply! Translate', page_icon='translator-icon.png', layout='wide', initial_sidebar_state='expanded')
+# LangChain imports
+from langchain.embeddings.base import Embeddings
+from langchain.vectorstores import FAISS
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain.llms.base import LLM
 
+# Gemini imports
+import google.generativeai as genai
 
-Languages = {'afrikaans':'af','albanian':'sq','amharic':'am','arabic':'ar','armenian':'hy','azerbaijani':'az','basque':'eu','belarusian':'be','bengali':'bn','bosnian':'bs','bulgarian':'bg','catalan':'ca','cebuano':'ceb','chichewa':'ny','chinese (simplified)':'zh-cn','chinese (traditional)':'zh-tw','corsican':'co','croatian':'hr','czech':'cs','danish':'da','dutch':'nl','english':'en','esperanto':'eo','estonian':'et','filipino':'tl','finnish':'fi','french':'fr','frisian':'fy','galician':'gl','georgian':'ka','german':'de','greek':'el','gujarati':'gu','haitian creole':'ht','hausa':'ha','hawaiian':'haw','hebrew':'iw','hebrew':'he','hindi':'hi','hmong':'hmn','hungarian':'hu','icelandic':'is','igbo':'ig','indonesian':'id','irish':'ga','italian':'it','japanese':'ja','javanese':'jw','kannada':'kn','kazakh':'kk','khmer':'km','korean':'ko','kurdish (kurmanji)':'ku','kyrgyz':'ky','lao':'lo','latin':'la','latvian':'lv','lithuanian':'lt','luxembourgish':'lb','macedonian':'mk','malagasy':'mg','malay':'ms','malayalam':'ml','maltese':'mt','maori':'mi','marathi':'mr','mongolian':'mn','myanmar (burmese)':'my','nepali':'ne','norwegian':'no','odia':'or','pashto':'ps','persian':'fa','polish':'pl','portuguese':'pt','punjabi':'pa','romanian':'ro','russian':'ru','samoan':'sm','scots gaelic':'gd','serbian':'sr','sesotho':'st','shona':'sn','sindhi':'sd','sinhala':'si','slovak':'sk','slovenian':'sl','somali':'so','spanish':'es','sundanese':'su','swahili':'sw','swedish':'sv','tajik':'tg','tamil':'ta','telugu':'te','thai':'th','turkish':'tr','turkmen':'tk','ukrainian':'uk','urdu':'ur','uyghur':'ug','uzbek':'uz','vietnamese':'vi','welsh':'cy','xhosa':'xh','yiddish':'yi','yoruba':'yo','zulu':'zu'}
+# Configure API
+load_dotenv()
+opengraph_app_id = os.environ.get("OPENGRAPH_APP_ID")
+# Configure page
+st.set_page_config(
+    page_title="Document QA System",
+    page_icon="🤖",
+    layout="wide"
+)
 
+# Add custom CSS for better styling
+st.markdown("""
+    <style>
+    .stAlert {
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+    .success {
+        background-color: #d4edda;
+        color: #155724;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-translator = google_translator()
-st.title("Language Translator:balloon:")
+# Initialize session state
+if 'vectorstore' not in st.session_state:
+    st.session_state.vectorstore = None
+if 'chain' not in st.session_state:
+    st.session_state.chain = None
+if 'prompt_template' not in st.session_state:
+    st.session_state.prompt_template = None
 
-text = st.text_area("Enter text:",height=None,max_chars=None,key=None,help="Enter your text here")
+# Gemini embeddings class
+class GeminiEmbeddings(Embeddings):
+    def embed_documents(self, texts):
+        embeddings = []
+        for text in texts:
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text
+            )
+            embeddings.append(result["embedding"])
+        return embeddings
 
-option1 = st.selectbox('Input language',
-                      ('english', 'afrikaans', 'albanian', 'amharic', 'arabic', 'armenian', 'azerbaijani', 'basque', 'belarusian', 'bengali', 'bosnian', 'bulgarian', 'catalan', 'cebuano', 'chichewa', 'chinese (simplified)', 'chinese (traditional)', 'corsican', 'croatian', 'czech', 'danish', 'dutch',  'esperanto', 'estonian', 'filipino', 'finnish', 'french', 'frisian', 'galician', 'georgian', 'german', 'greek', 'gujarati', 'haitian creole', 'hausa', 'hawaiian', 'hebrew', 'hindi', 'hmong', 'hungarian', 'icelandic', 'igbo', 'indonesian', 'irish', 'italian', 'japanese', 'javanese', 'kannada', 'kazakh', 'khmer', 'korean', 'kurdish (kurmanji)', 'kyrgyz', 'lao', 'latin', 'latvian', 'lithuanian', 'luxembourgish', 'macedonian', 'malagasy', 'malay', 'malayalam', 'maltese', 'maori', 'marathi', 'mongolian', 'myanmar (burmese)', 'nepali', 'norwegian', 'odia', 'pashto', 'persian', 'polish', 'portuguese', 'punjabi', 'romanian', 'russian', 'samoan', 'scots gaelic', 'serbian', 'sesotho', 'shona', 'sindhi', 'sinhala', 'slovak', 'slovenian', 'somali', 'spanish', 'sundanese', 'swahili', 'swedish', 'tajik', 'tamil', 'telugu', 'thai', 'turkish', 'turkmen', 'ukrainian', 'urdu', 'uyghur', 'uzbek', 'vietnamese', 'welsh', 'xhosa', 'yiddish', 'yoruba', 'zulu'))
+    def embed_query(self, text):
+        result = genai.embed_content(
+            model="models/text-embedding-004",
+            content=text
+        )
+        return result["embedding"]
 
-option2 = st.selectbox('Output language',
-                       ('malayalam', 'afrikaans', 'albanian', 'amharic', 'arabic', 'armenian', 'azerbaijani', 'basque', 'belarusian', 'bengali', 'bosnian', 'bulgarian', 'catalan', 'cebuano', 'chichewa', 'chinese (simplified)', 'chinese (traditional)', 'corsican', 'croatian', 'czech', 'danish', 'dutch', 'english', 'esperanto', 'estonian', 'filipino', 'finnish', 'french', 'frisian', 'galician', 'georgian', 'german', 'greek', 'gujarati', 'haitian creole', 'hausa', 'hawaiian', 'hebrew', 'hindi', 'hmong', 'hungarian', 'icelandic', 'igbo', 'indonesian', 'irish', 'italian', 'japanese', 'javanese', 'kannada', 'kazakh', 'khmer', 'korean', 'kurdish (kurmanji)', 'kyrgyz', 'lao', 'latin', 'latvian', 'lithuanian', 'luxembourgish', 'macedonian', 'malagasy', 'malay', 'maltese', 'maori', 'marathi', 'mongolian', 'myanmar (burmese)', 'nepali', 'norwegian', 'odia', 'pashto', 'persian', 'polish', 'portuguese', 'punjabi', 'romanian', 'russian', 'samoan', 'scots gaelic', 'serbian', 'sesotho', 'shona', 'sindhi', 'sinhala', 'slovak', 'slovenian', 'somali', 'spanish', 'sundanese', 'swahili', 'swedish', 'tajik', 'tamil', 'telugu', 'thai', 'turkish', 'turkmen', 'ukrainian', 'urdu', 'uyghur', 'uzbek', 'vietnamese', 'welsh', 'xhosa', 'yiddish', 'yoruba', 'zulu'))
+# Custom LLM wrapper for Gemini
+class GeminiLLM(LLM):
+    def _call(self, prompt, stop=None):
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        response = model.generate_content(prompt)
+        return response.text
 
-value1 = Languages[option1]
-value2 = Languages[option2]
+    @property
+    def _identifying_params(self):
+        return {"name_of_model": "gemini-1.5-flash"}
 
-if st.button('Translate Sentence'):
-    if text == "":
-        st.warning('Please **enter text** for translation')
+    @property
+    def _llm_type(self):
+        return "custom-gemini"
 
+# Existing helper functions
+def get_url_content(url):
+    base_url = "https://opengraph.io/api/1.1/extract"
+    encoded_url = quote(url, safe='')
+    api_url = f"{base_url}/{encoded_url}"
+
+    params = {
+        "accept_lang": "auto",
+        "html_elements": "h1,h2,p",
+        "app_id": opengraph_app_id
+    }
+    try:
+        response = requests.get(api_url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error accessing the URL: {e}")
+        return None
+
+def process_extracted_data(data):
+    text_contents = []
+    for tag in data.get('tags', []):
+        if tag.get('innerText'):
+            text_contents.append(tag['innerText'])
+
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,
+        chunk_overlap=200,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    chunks = text_splitter.split_text('\n'.join(text_contents))
+
+    embeddings = GeminiEmbeddings()
+    vectorstore = FAISS.from_texts(chunks, embeddings)
+    return vectorstore
+
+def create_retrieval_qa_chain(vectorstore):
+    prompt_template = PromptTemplate(
+        input_variables=["context", "question"],
+        template=(
+            "You are a helpful assistant. Use the following context:\n"
+            "{context}\n\n"
+            "Answer the question below using only the provided context, If you don't know the answer, just say that the answer can't be infered from the retrieved text.\n"
+            "Question: {question}\n"
+            "Answer:"
+        ),
+    )
+
+    chain = RetrievalQA.from_chain_type(
+        llm=GeminiLLM(),
+        chain_type="stuff",
+        retriever=vectorstore.as_retriever(),
+        return_source_documents=True
+    )
+
+    return chain, prompt_template
+
+def main():
+    st.title("📚 Document QA System")
+    
+    # Configure API keys
+    with st.sidebar:
+        st.header("Configuration")
+        api_key = st.text_input("Enter Gemini API Key", type="password")
+        if api_key:
+            genai.configure(api_key=api_key)
+            
+    # URL input and processing
+    url = st.text_input("Enter URL to process:", "https://www.presight.io/privacy-policy.html")
+    
+    if st.button("Process URL"):
+        with st.spinner("Processing URL..."):
+            data = get_url_content(url)
+            if data:
+                st.session_state.vectorstore = process_extracted_data(data)
+                st.session_state.chain, st.session_state.prompt_template = create_retrieval_qa_chain(
+                    st.session_state.vectorstore
+                )
+                st.success("URL processed successfully!")
+            else:
+                st.error("Failed to process URL")
+
+    # Q&A Section
+    if st.session_state.vectorstore is not None:
+        st.header("Ask Questions")
+        user_question = st.text_input("Enter your question:")
+        
+        if st.button("Get Answer"):
+            if user_question:
+                with st.spinner("Thinking..."):
+                    docs = st.session_state.chain.retriever.get_relevant_documents(user_question)
+                    context = "\n".join([d.page_content for d in docs])
+                    
+                    answer_results = st.session_state.chain({"query": user_question})
+                    answer = answer_results["result"]
+                    
+                    st.subheader("Answer:")
+                    st.write(answer)
+                    
+                    with st.expander("View Context"):
+                        st.write(context)
+            else:
+                st.warning("Please enter a question")
     else:
-        translate = translator.translate(text,lang_src=value1,lang_tgt=value2)
-        st.info(str(translate))
+        st.info("Please process a URL first to start asking questions")
 
-        converted_audio = gtts.gTTS(translate, lang=value2)
-        converted_audio.save("translated.mp3")
-        audio_file = open('translated.mp3','rb')
-        audio_bytes = audio_file.read()
-        st.audio(audio_bytes, format='audio')
-        st.write("To **download the audio file**, click the kebab menu on the audio bar.")
-        st.success("Translation is **successfully** completed!")
-        st.balloons()
-else:
-    pass
-
- 
+if __name__ == "__main__":
+    main()
