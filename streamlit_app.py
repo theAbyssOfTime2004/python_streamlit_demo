@@ -1,25 +1,16 @@
-
 import os
 import requests
 import json
 import streamlit as st
 from urllib.parse import quote
-from dotenv import load_dotenv
-
-# LangChain imports
 from langchain.embeddings.base import Embeddings
 from langchain.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
 from langchain.prompts import PromptTemplate
 from langchain.llms.base import LLM
-
-# Gemini imports
 import google.generativeai as genai
 
-# Configure API
-load_dotenv()
-opengraph_app_id = os.environ.get("OPENGRAPH_APP_ID")
 # Configure page
 st.set_page_config(
     page_title="Document QA System",
@@ -38,6 +29,13 @@ st.markdown("""
         background-color: #d4edda;
         color: #155724;
     }
+    /* Hide specific elements */
+    .element-container:has(button:contains("Process URL")) {
+        display: none;
+    }
+    .element-container:has(input[aria-label="Enter URL to process:"]) {
+        display: none;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -48,6 +46,8 @@ if 'chain' not in st.session_state:
     st.session_state.chain = None
 if 'prompt_template' not in st.session_state:
     st.session_state.prompt_template = None
+if 'opengraph_app_id' not in st.session_state:
+    st.session_state.opengraph_app_id = None
 
 # Gemini embeddings class
 class GeminiEmbeddings(Embeddings):
@@ -83,7 +83,6 @@ class GeminiLLM(LLM):
     def _llm_type(self):
         return "custom-gemini"
 
-# Existing helper functions
 def get_url_content(url):
     base_url = "https://opengraph.io/api/1.1/extract"
     encoded_url = quote(url, safe='')
@@ -92,7 +91,7 @@ def get_url_content(url):
     params = {
         "accept_lang": "auto",
         "html_elements": "h1,h2,p",
-        "app_id": opengraph_app_id
+        "app_id": st.session_state.opengraph_app_id
     }
     try:
         response = requests.get(api_url, params=params)
@@ -125,7 +124,7 @@ def create_retrieval_qa_chain(vectorstore):
         template=(
             "You are a helpful assistant. Use the following context:\n"
             "{context}\n\n"
-            "Answer the question below using only the provided context, If you don't know the answer, just say that the answer can't be infered from the retrieved text.\n"
+            "Answer the question below using only the provided context, If you don't know the answer, just say that the answer can't be inferred from the retrieved text.\n"
             "Question: {question}\n"
             "Answer:"
         ),
@@ -143,27 +142,33 @@ def create_retrieval_qa_chain(vectorstore):
 def main():
     st.title("📚 Document QA System")
     
-    # Configure API keys
+    # Modified sidebar configuration
     with st.sidebar:
         st.header("Configuration")
         api_key = st.text_input("Enter Gemini API Key", type="password")
+        opengraph_key = st.text_input("Enter OpenGraph API Key", type="password")
+        
         if api_key:
             genai.configure(api_key=api_key)
-            
-    # URL input and processing
-    url = st.text_input("Enter URL to process:", "https://www.presight.io/privacy-policy.html")
+        
+        if opengraph_key:
+            st.session_state.opengraph_app_id = opengraph_key
+
+    # Process URL automatically in the background
+    url = "https://www.presight.io/privacy-policy.html"  # Hardcoded URL
     
-    if st.button("Process URL"):
-        with st.spinner("Processing URL..."):
+    # Only process if we have the required keys
+    if st.session_state.opengraph_app_id and 'vectorstore' not in st.session_state:
+        with st.spinner("Processing document..."):
             data = get_url_content(url)
             if data:
                 st.session_state.vectorstore = process_extracted_data(data)
                 st.session_state.chain, st.session_state.prompt_template = create_retrieval_qa_chain(
                     st.session_state.vectorstore
                 )
-                st.success("URL processed successfully!")
+                st.success("Document processed successfully!")
             else:
-                st.error("Failed to process URL")
+                st.error("Failed to process document")
 
     # Q&A Section
     if st.session_state.vectorstore is not None:
@@ -187,7 +192,8 @@ def main():
             else:
                 st.warning("Please enter a question")
     else:
-        st.info("Please process a URL first to start asking questions")
+        if not st.session_state.opengraph_app_id:
+            st.info("Please enter your API keys in the sidebar to start")
 
 if __name__ == "__main__":
     main()
